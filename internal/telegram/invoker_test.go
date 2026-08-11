@@ -169,6 +169,67 @@ func TestHistoryWalksEveryPage(t *testing.T) {
 	}
 }
 
+// Telegram does not always set the outgoing flag on history a different session reads, so
+// whether a message is the account's own is decided by who wrote it.
+func TestHistoryMarksTheAccountsOwnMessages(t *testing.T) {
+	january := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	invoker := &fakeInvoker{
+		t:     t,
+		users: []tg.UserClass{&tg.User{ID: 42, FirstName: "Anna"}},
+		pages: [][]tg.MessageClass{{
+			chatMessage(20, january, "written by the account, flag not set"),
+			&tg.Message{
+				ID:      10,
+				Date:    int(january.Unix()),
+				Message: "written by somebody else",
+				PeerID:  &tg.PeerChannel{ChannelID: 1111111111},
+				FromID:  &tg.PeerUser{UserID: 99},
+			},
+		}},
+	}
+
+	client := wired(t, invoker)
+	client.selfID = 42
+
+	messages, err := client.History(context.Background(), ChannelChatID(1111111111), HistoryOptions{})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+
+	if len(messages) != 2 {
+		t.Fatalf("got %d messages", len(messages))
+	}
+	for _, message := range messages {
+		want := message.Author.ID == 42
+		if message.Outgoing != want {
+			t.Errorf("message #%d from %d: outgoing is %v, want %v",
+				message.ID, message.Author.ID, message.Outgoing, want)
+		}
+	}
+}
+
+func TestSearchMarksTheAccountsOwnMessages(t *testing.T) {
+	january := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	invoker := &fakeInvoker{
+		t:      t,
+		users:  []tg.UserClass{&tg.User{ID: 42, FirstName: "Anna"}},
+		search: []tg.MessageClass{chatMessage(20, january, "invoice")},
+	}
+
+	client := wired(t, invoker)
+	client.selfID = 42
+
+	messages, err := client.Search(context.Background(), ChannelChatID(1111111111), "invoice", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(messages) != 1 || !messages[0].Outgoing {
+		t.Errorf("the account's own message came back as %+v", messages)
+	}
+}
+
 func TestHistoryStartsWhereTheCallerSays(t *testing.T) {
 	invoker := &fakeInvoker{t: t, pages: [][]tg.MessageClass{{}}}
 

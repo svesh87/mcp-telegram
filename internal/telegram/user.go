@@ -55,6 +55,12 @@ type UserClient struct {
 	ready chan struct{}
 	done  chan struct{}
 
+	// selfID is the account's own identifier. Whether a message is outgoing is decided by
+	// who wrote it rather than by the per-message flag: Telegram does not always set that
+	// flag on history read by another session, and a message from oneself is a message from
+	// oneself either way.
+	selfID int64
+
 	// refresh reloads the dialog list. It is a field so that the policy around it (once
 	// at startup, again on an unknown identifier) can be tested without a connection.
 	refresh func(ctx context.Context) error
@@ -110,6 +116,9 @@ func (u *UserClient) Run(ctx context.Context) (err error) {
 		}
 		if !status.Authorized {
 			return ErrNotAuthorized
+		}
+		if status.User != nil {
+			u.selfID = status.User.ID
 		}
 
 		// Chats are addressed by identifier, and MTProto needs an access hash with it.
@@ -255,6 +264,8 @@ func (u *UserClient) History(ctx context.Context, chatID int64, opts HistoryOpti
 			continue
 		}
 
+		u.markOutgoing(&message)
+
 		if collected.add(message) {
 			break
 		}
@@ -344,7 +355,23 @@ func (u *UserClient) Search(ctx context.Context, chatID int64, text string, limi
 		return nil, fmt.Errorf("searching chat %d: %w", chatID, err)
 	}
 
-	return searchResult(result, chatID)
+	messages, err := searchResult(result, chatID)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range messages {
+		u.markOutgoing(&messages[i])
+	}
+
+	return messages, nil
+}
+
+// markOutgoing says whether the account itself wrote the message.
+func (u *UserClient) markOutgoing(message *Message) {
+	if u.selfID != 0 && message.Author.ID == u.selfID {
+		message.Outgoing = true
+	}
 }
 
 // searchResult reads a search answer. Telegram can answer "nothing changed" to a
