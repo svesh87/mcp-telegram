@@ -103,7 +103,7 @@ func Load(flags Flags, env Env) (*Config, error) {
 }
 
 // parseIdentities accepts "user", "bot" or both, in any order. Running both is the
-// interesting case — one process, two actors, separate rights — but each alone is
+// interesting case (one process, two actors, separate rights), but each alone is
 // legitimate: a bot-only server needs no phone login at all.
 func parseIdentities(raw string) ([]access.Identity, error) {
 	seen := map[access.Identity]bool{}

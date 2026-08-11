@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/message/styling"
@@ -51,18 +49,15 @@ func (u *UserClient) SendMessage(ctx context.Context, chatID int64, text string,
 	return Sent{ChatID: chatID, MessageID: SentMessageID(updates)}, nil
 }
 
-// SendFile sends a local file to a chat as the account.
-func (u *UserClient) SendFile(ctx context.Context, chatID int64, path, caption string) (Sent, error) {
+// SendFile sends a file to a chat as the account.
+func (u *UserClient) SendFile(ctx context.Context, chatID int64, file OutgoingFile, caption string) (Sent, error) {
 	if err := u.Wait(ctx); err != nil {
 		return Sent{}, err
 	}
 
-	info, err := os.Stat(path)
+	content, name, err := file.Bytes()
 	if err != nil {
-		return Sent{}, fmt.Errorf("reading %s: %w", path, err)
-	}
-	if info.IsDir() {
-		return Sent{}, fmt.Errorf("%s is a directory", path)
+		return Sent{}, err
 	}
 
 	peer, err := u.resolve(ctx, chatID)
@@ -70,12 +65,11 @@ func (u *UserClient) SendFile(ctx context.Context, chatID int64, path, caption s
 		return Sent{}, err
 	}
 
-	upload, err := uploader.NewUploader(u.raw).FromPath(ctx, path)
+	upload, err := uploader.NewUploader(u.raw).FromBytes(ctx, name, content)
 	if err != nil {
-		return Sent{}, fmt.Errorf("uploading %s: %w", path, err)
+		return Sent{}, fmt.Errorf("uploading %s: %w", name, err)
 	}
 
-	name := filepath.Base(path)
 	document := message.UploadedDocument(upload).Filename(name)
 	if caption != "" {
 		document = message.UploadedDocument(upload, styling.Plain(caption)).Filename(name)
@@ -83,7 +77,7 @@ func (u *UserClient) SendFile(ctx context.Context, chatID int64, path, caption s
 
 	updates, err := message.NewSender(u.raw).To(peer).Media(ctx, document)
 	if err != nil {
-		return Sent{}, fmt.Errorf("sending %s to chat %d: %w", path, chatID, err)
+		return Sent{}, fmt.Errorf("sending %s to chat %d: %w", name, chatID, err)
 	}
 
 	return Sent{ChatID: chatID, MessageID: SentMessageID(updates)}, nil

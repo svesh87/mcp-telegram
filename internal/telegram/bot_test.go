@@ -264,7 +264,7 @@ func TestBotSendFile(t *testing.T) {
 		return map[string]any{"message_id": 78}, true, ""
 	}
 
-	sent, err := client.SendFile(context.Background(), 424242, path, "for January")
+	sent, err := client.SendFile(context.Background(), 424242, OutgoingFile{Path: path}, "for January")
 	if err != nil {
 		t.Fatalf("SendFile: %v", err)
 	}
@@ -283,8 +283,96 @@ func TestBotSendFile(t *testing.T) {
 func TestBotSendFileOfSomethingThatIsNotThere(t *testing.T) {
 	_, client := newBotServer(t)
 
-	if _, err := client.SendFile(context.Background(), 424242, filepath.Join(t.TempDir(), "nope"), ""); err == nil {
+	if _, err := client.SendFile(context.Background(), 424242,
+		OutgoingFile{Path: filepath.Join(t.TempDir(), "nope")}, ""); err == nil {
 		t.Error("a missing file was sent")
+	}
+}
+
+// The monthly bundle goes out as one album, because that is what a person can forward on
+// in one piece.
+func TestBotSendAlbum(t *testing.T) {
+	fake, client := newBotServer(t)
+
+	var (
+		gotMedia string
+		gotNames []string
+	)
+	fake.handlers["sendMediaGroup"] = func(r *http.Request) (any, bool, string) {
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("the request is not multipart: %v", err)
+		}
+
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("reading a part: %v", err)
+			}
+
+			content, _ := io.ReadAll(part)
+			if part.FormName() == "media" {
+				gotMedia = string(content)
+				continue
+			}
+			if part.FileName() != "" {
+				gotNames = append(gotNames, part.FileName())
+			}
+		}
+
+		return []map[string]any{{"message_id": 90}, {"message_id": 91}}, true, ""
+	}
+
+	sent, err := client.SendAlbum(context.Background(), 424242, "for January", []OutgoingFile{
+		{Name: "statement.pdf", Content: []byte("%PDF statement")},
+		{Name: "invoice.pdf", Content: []byte("%PDF invoice")},
+	})
+	if err != nil {
+		t.Fatalf("SendAlbum: %v", err)
+	}
+
+	if sent.MessageID != 90 {
+		t.Errorf("sent is %+v", sent)
+	}
+	if len(gotNames) != 2 {
+		t.Errorf("the files arrived as %v", gotNames)
+	}
+	// The caption hangs on the first item only: Telegram shows one caption per album.
+	if !strings.Contains(gotMedia, `"caption":"for January"`) {
+		t.Errorf("the media description is %s", gotMedia)
+	}
+	if strings.Count(gotMedia, "caption") != 1 {
+		t.Errorf("the caption is repeated: %s", gotMedia)
+	}
+	if !strings.Contains(gotMedia, "attach://file0") || !strings.Contains(gotMedia, "attach://file1") {
+		t.Errorf("the files are not attached by name: %s", gotMedia)
+	}
+}
+
+func TestBotSendAlbumBounds(t *testing.T) {
+	_, client := newBotServer(t)
+
+	if _, err := client.SendAlbum(context.Background(), 424242, "", nil); err == nil {
+		t.Error("an empty album was sent")
+	}
+
+	tooMany := make([]OutgoingFile, AlbumLimit+1)
+	for i := range tooMany {
+		tooMany[i] = OutgoingFile{Name: "a.pdf", Content: []byte("x")}
+	}
+	if _, err := client.SendAlbum(context.Background(), 424242, "", tooMany); err == nil {
+		t.Errorf("an album of %d files was sent", len(tooMany))
+	}
+
+	// A file that cannot be read stops the album before anything goes out.
+	if _, err := client.SendAlbum(context.Background(), 424242, "", []OutgoingFile{
+		{Path: filepath.Join(t.TempDir(), "nope")},
+	}); err == nil {
+		t.Error("an album with a missing file was sent")
 	}
 }
 

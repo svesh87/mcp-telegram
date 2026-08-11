@@ -71,17 +71,19 @@ func (f *fakeUser) SendMessage(_ context.Context, chatID int64, text string, _ i
 	return sent, f.err
 }
 
-func (f *fakeUser) SendFile(_ context.Context, chatID int64, path, _ string) (telegram.Sent, error) {
-	f.sentPath = path
+func (f *fakeUser) SendFile(_ context.Context, chatID int64, file telegram.OutgoingFile, _ string) (telegram.Sent, error) {
+	f.sentPath = file.Path
 	sent := telegram.Sent{ChatID: chatID, MessageID: 8}
 	f.sent = append(f.sent, sent)
 	return sent, f.err
 }
 
 type fakeBot struct {
-	updates []telegram.Message
-	sent    []telegram.Sent
-	err     error
+	updates   []telegram.Message
+	sent      []telegram.Sent
+	sentFiles []telegram.OutgoingFile
+	caption   string
+	err       error
 }
 
 func (f *fakeBot) Me(context.Context) (telegram.Chat, error) {
@@ -106,8 +108,17 @@ func (f *fakeBot) SendMessage(_ context.Context, chatID int64, _ string, _ int) 
 	return sent, f.err
 }
 
-func (f *fakeBot) SendFile(_ context.Context, chatID int64, _, _ string) (telegram.Sent, error) {
+func (f *fakeBot) SendFile(_ context.Context, chatID int64, file telegram.OutgoingFile, _ string) (telegram.Sent, error) {
+	f.sentFiles = append(f.sentFiles, file)
 	sent := telegram.Sent{ChatID: chatID, MessageID: 10}
+	f.sent = append(f.sent, sent)
+	return sent, f.err
+}
+
+func (f *fakeBot) SendAlbum(_ context.Context, chatID int64, caption string, files []telegram.OutgoingFile) (telegram.Sent, error) {
+	f.caption = caption
+	f.sentFiles = append(f.sentFiles, files...)
+	sent := telegram.Sent{ChatID: chatID, MessageID: 11}
 	f.sent = append(f.sent, sent)
 	return sent, f.err
 }

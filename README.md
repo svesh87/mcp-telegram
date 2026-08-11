@@ -1,7 +1,7 @@
 # mcp-telegram
 
-An MCP server that reaches Telegram as two separate identities — a user account over
-MTProto and a bot over the Bot API — and lets each of them touch only the chats it was
+An MCP server that reaches Telegram as two separate identities, a user account over
+MTProto and a bot over the Bot API, and lets each of them touch only the chats it was
 given.
 
 The point is where the decision lives. The access lists are the server's own
@@ -66,9 +66,19 @@ Write, registered only with `--allow-write`:
 | Tool | What it does |
 |---|---|
 | `telegram_user_send_message` | send text as the account |
-| `telegram_user_send_file` | send a local file as the account |
+| `telegram_user_send_file` | send a file as the account |
 | `telegram_bot_send_message` | send text as the bot |
-| `telegram_bot_send_file` | send a local file as the bot |
+| `telegram_bot_send_file` | send a file as the bot |
+| `telegram_bot_send_album` | send up to ten files as one message |
+
+A file to send is given either as a path on the machine running the server or as
+`content_base64` with a `file_name`. Both exist for a reason: a path is what an operator
+has at hand, and content is what a script has, and a script does not have to hand its
+documents to a container to send them.
+
+An album is one message rather than several because that is what a person can forward on
+in one piece. Telegram takes at most ten files per album and shows one caption for the
+whole of it.
 
 Every message comes back with its identifier, date, author, text, the names and sizes of
 its attachments, and what it replies to. A history read paginates for as long as it takes
@@ -132,7 +142,7 @@ Read-only over stdio:
 mcp-telegram --identities=user,bot --session-dir ~/.local/share/mcp-telegram
 ```
 
-Long-lived over HTTP, which is how it is meant to run — one process for every client on
+Long-lived over HTTP, which is how it is meant to run, one process for every client on
 the machine:
 
 ```sh

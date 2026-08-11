@@ -297,14 +297,14 @@ func TestSendFileOfSomethingThatIsNotThere(t *testing.T) {
 	invoker := &fakeInvoker{t: t}
 	client := wired(t, invoker)
 
-	if _, err := client.SendFile(context.Background(),
-		ChannelChatID(1111111111), t.TempDir()+"/nope", ""); err == nil {
+	if _, err := client.SendFile(context.Background(), ChannelChatID(1111111111),
+		OutgoingFile{Path: t.TempDir() + "/nope"}, ""); err == nil {
 		t.Error("a missing file was sent")
 	}
 
 	// A directory is not a file either, and the failure has to come before the upload.
-	if _, err := client.SendFile(context.Background(),
-		ChannelChatID(1111111111), t.TempDir(), ""); err == nil {
+	if _, err := client.SendFile(context.Background(), ChannelChatID(1111111111),
+		OutgoingFile{Path: t.TempDir()}, ""); err == nil {
 		t.Error("a directory was sent")
 	}
 	if len(invoker.calls) != 0 {
@@ -337,7 +337,7 @@ func TestReadsWaitForTheConnection(t *testing.T) {
 	if _, err := client.SendMessage(context.Background(), 1, "x", 0); !errors.Is(err, ErrNotAuthorized) {
 		t.Errorf("SendMessage answered %v", err)
 	}
-	if _, err := client.SendFile(context.Background(), 1, "x", ""); !errors.Is(err, ErrNotAuthorized) {
+	if _, err := client.SendFile(context.Background(), 1, OutgoingFile{Path: "x"}, ""); !errors.Is(err, ErrNotAuthorized) {
 		t.Errorf("SendFile answered %v", err)
 	}
 }

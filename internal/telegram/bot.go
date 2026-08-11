@@ -140,44 +140,123 @@ func (b *BotClient) SendMessage(ctx context.Context, chatID int64, text string, 
 	return Sent{ChatID: chatID, MessageID: result.MessageID}, nil
 }
 
-// SendFile sends a local file as the bot.
-func (b *BotClient) SendFile(ctx context.Context, chatID int64, path, caption string) (Sent, error) {
-	file, err := os.Open(path)
+// SendFile sends one file as the bot.
+func (b *BotClient) SendFile(ctx context.Context, chatID int64, file OutgoingFile, caption string) (Sent, error) {
+	content, name, err := file.Bytes()
 	if err != nil {
-		return Sent{}, fmt.Errorf("reading %s: %w", path, err)
+		return Sent{}, err
 	}
-	defer file.Close()
-
-	body := &bytes.Buffer{}
-	form := multipart.NewWriter(body)
 
 	fields := map[string]string{"chat_id": strconv.FormatInt(chatID, 10)}
 	if caption != "" {
 		fields["caption"] = caption
 	}
-	for name, value := range fields {
-		if err := form.WriteField(name, value); err != nil {
-			return Sent{}, fmt.Errorf("building the request: %w", err)
-		}
-	}
 
-	part, err := form.CreateFormFile("document", filepath.Base(path))
+	body, contentType, err := form(fields, map[string]outgoing{"document": {name, content}})
 	if err != nil {
-		return Sent{}, fmt.Errorf("building the request: %w", err)
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return Sent{}, fmt.Errorf("reading %s: %w", path, err)
-	}
-	if err := form.Close(); err != nil {
-		return Sent{}, fmt.Errorf("building the request: %w", err)
+		return Sent{}, err
 	}
 
 	var result botMessage
-	if err := b.post(ctx, "sendDocument", form.FormDataContentType(), body, &result); err != nil {
+	if err := b.post(ctx, "sendDocument", contentType, body, &result); err != nil {
 		return Sent{}, err
 	}
 
 	return Sent{ChatID: chatID, MessageID: result.MessageID}, nil
+}
+
+// SendAlbum sends several files as one message.
+//
+// One message rather than several because that is what can be forwarded on in one piece:
+// the monthly bundle of statements and invoices is read by a person who then passes it
+// along, and a dozen separate messages would arrive as a dozen separate forwards.
+func (b *BotClient) SendAlbum(ctx context.Context, chatID int64, caption string, files []OutgoingFile) (Sent, error) {
+	if len(files) == 0 {
+		return Sent{}, errors.New("an album needs at least one file")
+	}
+	if len(files) > AlbumLimit {
+		return Sent{}, fmt.Errorf("Telegram takes at most %d files in one album, got %d: "+
+			"send them as several albums", AlbumLimit, len(files))
+	}
+
+	attachments := map[string]outgoing{}
+	media := make([]map[string]any, 0, len(files))
+
+	for index, file := range files {
+		content, name, err := file.Bytes()
+		if err != nil {
+			return Sent{}, err
+		}
+
+		key := fmt.Sprintf("file%d", index)
+		attachments[key] = outgoing{name, content}
+
+		item := map[string]any{"type": "document", "media": "attach://" + key}
+		// An album carries one caption, and Telegram takes it from the first item.
+		if index == 0 && caption != "" {
+			item["caption"] = caption
+		}
+		media = append(media, item)
+	}
+
+	description, err := json.Marshal(media)
+	if err != nil {
+		return Sent{}, fmt.Errorf("building the album: %w", err)
+	}
+
+	body, contentType, err := form(map[string]string{
+		"chat_id": strconv.FormatInt(chatID, 10),
+		"media":   string(description),
+	}, attachments)
+	if err != nil {
+		return Sent{}, err
+	}
+
+	var result []botMessage
+	if err := b.post(ctx, "sendMediaGroup", contentType, body, &result); err != nil {
+		return Sent{}, err
+	}
+
+	sent := Sent{ChatID: chatID}
+	if len(result) > 0 {
+		sent.MessageID = result[0].MessageID
+	}
+
+	return sent, nil
+}
+
+// outgoing is one file inside a multipart request.
+type outgoing struct {
+	name    string
+	content []byte
+}
+
+// form builds the multipart body Telegram takes files in.
+func form(fields map[string]string, files map[string]outgoing) (io.Reader, string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	for name, value := range fields {
+		if err := writer.WriteField(name, value); err != nil {
+			return nil, "", fmt.Errorf("building the request: %w", err)
+		}
+	}
+
+	for field, file := range files {
+		part, err := writer.CreateFormFile(field, file.name)
+		if err != nil {
+			return nil, "", fmt.Errorf("building the request: %w", err)
+		}
+		if _, err := part.Write(file.content); err != nil {
+			return nil, "", fmt.Errorf("building the request: %w", err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("building the request: %w", err)
+	}
+
+	return body, writer.FormDataContentType(), nil
 }
 
 // Download saves a file the bot can see. Files are addressed by the identifier that

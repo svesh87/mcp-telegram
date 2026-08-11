@@ -71,15 +71,22 @@ func (r *registry) registerUser(srv *server.MCPServer) {
 	), r.userSendMessage)
 
 	srv.AddTool(mcp.NewTool("telegram_user_send_file",
-		mcp.WithDescription("Send a local file to a chat as the account."),
+		mcp.WithDescription("Send a file to a chat as the account. "+fileHelp),
 		mcp.WithString("chat_id", mcp.Required(), mcp.Description(chatIDHelp)),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Path to the file on the machine running this server.")),
+		mcp.WithString("path", mcp.Description(pathHelp)),
+		mcp.WithString("file_name", mcp.Description("Name to send the file under. Required with content_base64.")),
+		mcp.WithString("content_base64", mcp.Description("The file itself, base64 encoded.")),
 		mcp.WithString("caption", mcp.Description("Text to send with the file.")),
 	), r.userSendFile)
 }
 
 const chatIDHelp = "Chat identifier as a Telegram client shows it: negative for groups and channels, " +
 	"positive for people. Names are not accepted."
+
+const fileHelp = "Give the file either as a path on the machine running this server or as " +
+	"content_base64 with a file_name, not both."
+
+const pathHelp = "Path to the file on the machine running this server."
 
 func (r *registry) userChats(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	visible, err := r.opts.UserRead.Chats(ctx)
@@ -250,12 +257,12 @@ func (r *registry) userSendFile(ctx context.Context, req mcp.CallToolRequest) (*
 		return toolError(err), nil
 	}
 
-	path, err := req.RequireString("path")
+	file, err := fileArg(req)
 	if err != nil {
 		return toolError(err), nil
 	}
 
-	sent, err := r.opts.UserWrite.SendFile(ctx, chatID, path, req.GetString("caption", ""))
+	sent, err := r.opts.UserWrite.SendFile(ctx, chatID, file, req.GetString("caption", ""))
 	if err != nil {
 		return toolError(err), nil
 	}

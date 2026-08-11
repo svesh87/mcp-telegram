@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/svesh87/mcp-telegram/internal/access"
@@ -60,6 +63,8 @@ func TestBotWriting(t *testing.T) {
 	opts.AllowWrite = true
 	r := &registry{opts: opts}
 
+	invoice := tempFile(t, "invoice.pdf")
+
 	result, err := r.botSendMessage(context.Background(), request(map[string]any{
 		"chat_id": "424242",
 		"text":    "the documents are ready",
@@ -76,7 +81,7 @@ func TestBotWriting(t *testing.T) {
 
 	fileResult, err := r.botSendFile(context.Background(), request(map[string]any{
 		"chat_id": "424242",
-		"path":    "/tmp/invoice.pdf",
+		"path":    invoice,
 	}))
 	if err != nil {
 		t.Fatalf("botSendFile: %v", err)
@@ -121,10 +126,10 @@ func TestBotWritingNeedsItsArguments(t *testing.T) {
 		t.Fatalf("botSendFile: %v", err)
 	}
 	if !noPath.IsError {
-		t.Error("a file with no path was accepted")
+		t.Error("a file with neither a path nor content was accepted")
 	}
 
-	noChat, err := r.botSendFile(context.Background(), request(map[string]any{"path": "/tmp/a.pdf"}))
+	noChat, err := r.botSendFile(context.Background(), request(map[string]any{"path": tempFile(t, "a.pdf")}))
 	if err != nil {
 		t.Fatalf("botSendFile: %v", err)
 	}
@@ -198,6 +203,8 @@ func TestUserDownloadAndSendFile(t *testing.T) {
 	opts.UserRead = &fakeUser{saved: telegram.SavedFile{Path: "/downloads/invoice.pdf", Size: 10}}
 	r := &registry{opts: opts}
 
+	invoice := tempFile(t, "invoice.pdf")
+
 	result, err := r.userDownload(context.Background(), request(map[string]any{
 		"chat_id":    "-1001111111111",
 		"message_id": float64(512),
@@ -224,7 +231,7 @@ func TestUserDownloadAndSendFile(t *testing.T) {
 
 	sentResult, err := r.userSendFile(context.Background(), request(map[string]any{
 		"chat_id": "-1002222222222",
-		"path":    "/tmp/invoice.pdf",
+		"path":    invoice,
 		"caption": "for January",
 	}))
 	if err != nil {
@@ -236,13 +243,13 @@ func TestUserDownloadAndSendFile(t *testing.T) {
 	if sent.MessageID != 8 {
 		t.Errorf("sent is %+v", sent)
 	}
-	if got := opts.UserWrite.(*fakeUser).sentPath; got != "/tmp/invoice.pdf" {
+	if got := opts.UserWrite.(*fakeUser).sentPath; got != invoice {
 		t.Errorf("the path that went out is %q", got)
 	}
 
 	refused, err := r.userSendFile(context.Background(), request(map[string]any{
 		"chat_id": "-1001111111111",
-		"path":    "/tmp/invoice.pdf",
+		"path":    invoice,
 	}))
 	if err != nil {
 		t.Fatalf("userSendFile: %v", err)
@@ -258,7 +265,7 @@ func TestUserDownloadAndSendFile(t *testing.T) {
 		t.Fatalf("userSendFile: %v", err)
 	}
 	if !noPath.IsError {
-		t.Error("a file with no path was accepted")
+		t.Error("a file with neither a path nor content was accepted")
 	}
 }
 
@@ -378,5 +385,97 @@ func TestAccessListsOfABotOnlyServer(t *testing.T) {
 	}
 	if payload.DownloadDir != "" {
 		t.Errorf("download_dir is %q on a server without one", payload.DownloadDir)
+	}
+}
+
+// tempFile writes a file to send, since a path argument is checked before anything is
+// sent.
+func tempFile(t *testing.T, name string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("%PDF-1.4 pretend"), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+
+	return path
+}
+
+// A script sending its own bytes never hands the file system to the server, and the
+// monthly bundle goes out as one album so it can be forwarded on in one piece.
+func TestBotSendAlbumFromContent(t *testing.T) {
+	opts := testOptions(testLists())
+	opts.AllowWrite = true
+	r := &registry{opts: opts}
+
+	result, err := r.botSendAlbum(context.Background(), request(map[string]any{
+		"chat_id": "424242",
+		"caption": "statements and invoices for January",
+		"files": []any{
+			map[string]any{
+				"file_name":      "statement.pdf",
+				"content_base64": base64.StdEncoding.EncodeToString([]byte("%PDF statement")),
+			},
+			map[string]any{"path": tempFile(t, "invoice.pdf")},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("botSendAlbum: %v", err)
+	}
+
+	var sent telegram.Sent
+	payloadOf(t, result, &sent)
+	if sent.MessageID != 11 {
+		t.Errorf("sent is %+v", sent)
+	}
+
+	sender := opts.BotWrite.(*fakeBot)
+	if len(sender.sentFiles) != 2 {
+		t.Fatalf("%d files went out", len(sender.sentFiles))
+	}
+	if string(sender.sentFiles[0].Content) != "%PDF statement" {
+		t.Errorf("the first file carried %q", sender.sentFiles[0].Content)
+	}
+	if sender.caption != "statements and invoices for January" {
+		t.Errorf("the caption is %q", sender.caption)
+	}
+}
+
+func TestBotSendAlbumRefusesNonsense(t *testing.T) {
+	opts := testOptions(testLists())
+	opts.AllowWrite = true
+	r := &registry{opts: opts}
+
+	cases := map[string]map[string]any{
+		"no files at all":           {"chat_id": "424242"},
+		"files is not a list":       {"chat_id": "424242", "files": "invoice.pdf"},
+		"an entry is not an object": {"chat_id": "424242", "files": []any{"invoice.pdf"}},
+		"content that is not base64": {"chat_id": "424242", "files": []any{
+			map[string]any{"file_name": "a.pdf", "content_base64": "not base64 at all!"},
+		}},
+		"content with no name": {"chat_id": "424242", "files": []any{
+			map[string]any{"content_base64": base64.StdEncoding.EncodeToString([]byte("x"))},
+		}},
+		"a path and content together": {"chat_id": "424242", "files": []any{
+			map[string]any{
+				"path":           tempFile(t, "both.pdf"),
+				"content_base64": base64.StdEncoding.EncodeToString([]byte("x")),
+			},
+		}},
+		"a chat in no write list": {"chat_id": "-1003333333333", "files": []any{
+			map[string]any{"file_name": "a.pdf", "content_base64": base64.StdEncoding.EncodeToString([]byte("x"))},
+		}},
+	}
+
+	for name, arguments := range cases {
+		t.Run(name, func(t *testing.T) {
+			result, err := r.botSendAlbum(context.Background(), request(arguments))
+			if err != nil {
+				t.Fatalf("botSendAlbum: %v", err)
+			}
+			if !result.IsError {
+				t.Error("it was accepted")
+			}
+		})
 	}
 }

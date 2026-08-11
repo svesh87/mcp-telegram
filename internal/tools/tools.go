@@ -7,6 +7,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -32,7 +33,7 @@ type UserReader interface {
 // UserWriter is the write side of the account identity.
 type UserWriter interface {
 	SendMessage(ctx context.Context, chatID int64, text string, replyTo int) (telegram.Sent, error)
-	SendFile(ctx context.Context, chatID int64, path, caption string) (telegram.Sent, error)
+	SendFile(ctx context.Context, chatID int64, file telegram.OutgoingFile, caption string) (telegram.Sent, error)
 }
 
 // BotReader is the read side of the bot identity.
@@ -46,7 +47,8 @@ type BotReader interface {
 // BotWriter is the write side of the bot identity.
 type BotWriter interface {
 	SendMessage(ctx context.Context, chatID int64, text string, replyTo int) (telegram.Sent, error)
-	SendFile(ctx context.Context, chatID int64, path, caption string) (telegram.Sent, error)
+	SendFile(ctx context.Context, chatID int64, file telegram.OutgoingFile, caption string) (telegram.Sent, error)
+	SendAlbum(ctx context.Context, chatID int64, caption string, files []telegram.OutgoingFile) (telegram.Sent, error)
 }
 
 // Options is what the tools need to work.
@@ -205,6 +207,81 @@ func sinceArg(req mcp.CallToolRequest) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("since %q is not a date: use 2006-01-02 or a full RFC 3339 timestamp", raw)
+}
+
+// fileArg reads one outgoing file.
+//
+// Either a path on this machine or the content itself. A script has the content and no
+// reason to hand its documents to a container; an operator has a path.
+func fileArg(req mcp.CallToolRequest) (telegram.OutgoingFile, error) {
+	file := telegram.OutgoingFile{
+		Name: strings.TrimSpace(req.GetString("file_name", "")),
+		Path: strings.TrimSpace(req.GetString("path", "")),
+	}
+
+	if encoded := strings.TrimSpace(req.GetString("content_base64", "")); encoded != "" {
+		content, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return telegram.OutgoingFile{}, fmt.Errorf("content_base64 is not base64: %w", err)
+		}
+		file.Content = content
+	}
+
+	if _, _, err := file.Bytes(); err != nil {
+		return telegram.OutgoingFile{}, err
+	}
+
+	return file, nil
+}
+
+// filesArg reads a list of outgoing files for an album.
+func filesArg(req mcp.CallToolRequest) ([]telegram.OutgoingFile, error) {
+	raw, ok := req.GetArguments()["files"]
+	if !ok {
+		return nil, errors.New("files is required: a list of {path} or {file_name, content_base64}")
+	}
+
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("files must be a list, got %T", raw)
+	}
+
+	files := make([]telegram.OutgoingFile, 0, len(list))
+	for index, item := range list {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("files[%d] must be an object, got %T", index, item)
+		}
+
+		file := telegram.OutgoingFile{
+			Name: strings.TrimSpace(stringField(fields, "file_name")),
+			Path: strings.TrimSpace(stringField(fields, "path")),
+		}
+
+		if encoded := strings.TrimSpace(stringField(fields, "content_base64")); encoded != "" {
+			content, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, fmt.Errorf("files[%d].content_base64 is not base64: %w", index, err)
+			}
+			file.Content = content
+		}
+
+		if _, _, err := file.Bytes(); err != nil {
+			return nil, fmt.Errorf("files[%d]: %w", index, err)
+		}
+
+		files = append(files, file)
+	}
+
+	return files, nil
+}
+
+func stringField(fields map[string]any, name string) string {
+	value, ok := fields[name].(string)
+	if !ok {
+		return ""
+	}
+	return value
 }
 
 // downloadDir answers where a download may write, or why it may not.
