@@ -80,8 +80,12 @@ An album is one message rather than several because that is what a person can fo
 in one piece. Telegram takes at most ten files per album and shows one caption for the
 whole of it.
 
-Every message comes back with its identifier, date, author, text, the names and sizes of
-its attachments, and what it replies to. A history read paginates for as long as it takes
+Every message comes back with its identifier, date, author, text, the names and sizes of its
+attachments, and what it replies to. The text is the text as written, without Telegram's
+formatting: bold and italic are decoration, and leaving them out keeps the text easy to match
+against. An address hidden behind words is not decoration, so those come back separately as
+`links`, and a service message carries what it points at, which is the whole meaning of
+"pinned a message". A history read paginates for as long as it takes
 and answers in reading order, so a year of one chat is one call.
 
 The download tools appear only when `--download-dir` is set. Files land there under a name

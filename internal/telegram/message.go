@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/gotd/td/tg"
 )
@@ -31,6 +32,16 @@ type Message struct {
 	// UpdateID is set only on messages the bot read from its update queue. The caller
 	// needs it to ask for the next batch, since the queue is acknowledged by offset.
 	UpdateID int `json:"update_id,omitempty"`
+	// Links are the addresses hidden behind words in the text. Telegram keeps them beside
+	// the message rather than in it, so a caller reading only the text would never see them.
+	Links []Link `json:"links,omitempty"`
+}
+
+// Link is an address the text does not spell out: the words a reader sees, and where they
+// lead. Bare URLs are already in the text and are not repeated here.
+type Link struct {
+	Text string `json:"text"`
+	URL  string `json:"url"`
 }
 
 // Author is the sender. Channel posts and anonymous group admins have no user behind
@@ -239,6 +250,8 @@ func ConvertMessage(raw tg.MessageClass, chatID int64, entities *Entities) (Mess
 			}
 		}
 
+		message.Links = LinksOf(m.Message, m.Entities)
+
 		return message, true
 
 	case *tg.MessageService:
@@ -251,6 +264,12 @@ func ConvertMessage(raw tg.MessageClass, chatID int64, entities *Entities) (Mess
 
 		if m.FromID != nil {
 			message.Author = entities.Author(m.FromID)
+		}
+
+		// A service message can point at another one: "pinned a message" is only useful
+		// together with which message was pinned.
+		if header, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok {
+			message.ReplyToMessageID = header.ReplyToMsgID
 		}
 
 		return message, true
@@ -301,6 +320,44 @@ func ConvertMedia(media tg.MessageMediaClass) (Attachment, bool) {
 	default:
 		return Attachment{Kind: KindOther}, true
 	}
+}
+
+// LinksOf pulls the hidden addresses out of a message.
+//
+// Telegram sends offsets in UTF-16 code units, which is neither bytes nor runes, so the text
+// is measured the same way before slicing: a message with Cyrillic or an emoji in front of a
+// link would otherwise cut in the wrong place.
+func LinksOf(text string, entities []tg.MessageEntityClass) []Link {
+	if len(entities) == 0 {
+		return nil
+	}
+
+	units := utf16.Encode([]rune(text))
+	var links []Link
+
+	for _, entity := range entities {
+		hidden, ok := entity.(*tg.MessageEntityTextURL)
+		if !ok {
+			continue
+		}
+
+		links = append(links, Link{Text: sliceUnits(units, hidden.Offset, hidden.Length), URL: hidden.URL})
+	}
+
+	return links
+}
+
+func sliceUnits(units []uint16, offset, length int) string {
+	if offset < 0 || length <= 0 || offset >= len(units) {
+		return ""
+	}
+
+	end := offset + length
+	if end > len(units) {
+		end = len(units)
+	}
+
+	return string(utf16.Decode(units[offset:end]))
 }
 
 // documentKind reads the kind off the document attributes. Telegram calls a voice

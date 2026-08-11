@@ -234,3 +234,78 @@ func TestUnsupportedMessageTypeIsDropped(t *testing.T) {
 func document(attributes ...tg.DocumentAttributeClass) tg.MessageMediaClass {
 	return &tg.MessageMediaDocument{Document: &tg.Document{ID: 1, Attributes: attributes}}
 }
+
+// Telegram keeps the address of a link beside the message rather than in it, so a caller
+// reading only the text loses the URL entirely. Formatting is decoration and loses nothing;
+// an address is information.
+func TestLinksAreKeptBesideTheText(t *testing.T) {
+	text := "Смотрите условия на сайте Mellow, там всё есть"
+
+	entities := []tg.MessageEntityClass{
+		&tg.MessageEntityBold{Offset: 0, Length: 8},
+		// Offsets are UTF-16 code units, and this text is Cyrillic: counted as bytes the
+		// slice would land in the middle of a letter.
+		&tg.MessageEntityTextURL{Offset: 26, Length: 6, URL: "https://mellow.io/"},
+	}
+
+	links := LinksOf(text, entities)
+
+	if len(links) != 1 {
+		t.Fatalf("links are %+v", links)
+	}
+	if links[0].URL != "https://mellow.io/" || links[0].Text != "Mellow" {
+		t.Errorf("the link came out as %+v", links[0])
+	}
+}
+
+func TestLinksOfSomethingWithoutThem(t *testing.T) {
+	if links := LinksOf("just text", nil); links != nil {
+		t.Errorf("links out of nothing: %+v", links)
+	}
+	// A bare URL is already in the text and is not repeated.
+	if links := LinksOf("see https://mellow.io/", []tg.MessageEntityClass{
+		&tg.MessageEntityURL{Offset: 4, Length: 18},
+	}); links != nil {
+		t.Errorf("a bare URL was repeated: %+v", links)
+	}
+}
+
+// An entity that points past the end of the text is Telegram's problem, not a reason to
+// panic in the middle of reading a year of history.
+func TestLinksSurviveNonsenseOffsets(t *testing.T) {
+	cases := []*tg.MessageEntityTextURL{
+		{Offset: 100, Length: 5, URL: "https://example.test/"},
+		{Offset: 2, Length: 100, URL: "https://example.test/"},
+		{Offset: -1, Length: 5, URL: "https://example.test/"},
+		{Offset: 0, Length: 0, URL: "https://example.test/"},
+	}
+
+	for _, entity := range cases {
+		links := LinksOf("short", []tg.MessageEntityClass{entity})
+		if len(links) != 1 {
+			t.Fatalf("offset %d length %d gave %+v", entity.Offset, entity.Length, links)
+		}
+	}
+}
+
+// A service message can point at another one: "pinned a message" is only useful together
+// with which message was pinned, and that reference used to be dropped.
+func TestServiceMessageKeepsWhatItPointsAt(t *testing.T) {
+	raw := &tg.MessageService{ID: 713564, Date: 1, Action: &tg.MessageActionPinMessage{}}
+	raw.SetFromID(&tg.PeerUser{UserID: 42})
+
+	reply := &tg.MessageReplyHeader{}
+	reply.SetReplyToMsgID(712688)
+	raw.SetReplyTo(reply)
+
+	message, ok := ConvertMessage(raw, -100, testEntities())
+	if !ok {
+		t.Fatal("a service message was dropped")
+	}
+	if message.ReplyToMessageID != 712688 {
+		t.Errorf("the reference is %d, want the pinned message", message.ReplyToMessageID)
+	}
+	if message.Service != "pin_message" {
+		t.Errorf("the action is %q", message.Service)
+	}
+}
