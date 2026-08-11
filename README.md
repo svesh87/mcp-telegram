@@ -127,8 +127,18 @@ export TELEGRAM_API_ID=… TELEGRAM_API_HASH=…
 mcp-telegram login --session-dir ~/.local/share/mcp-telegram
 ```
 
-It asks for the phone number, then the code, then the two-factor password if the account
-has one. The password is read without echo.
+It asks for the phone number, then the code, then the two-factor password if the account has
+one. The password is read without echo.
+
+A mistyped code or password costs one attempt, not the whole login: each is asked again, up
+to three times. This is why the sign-in is written out here instead of using the ready-made
+flow, which gives up on the first refusal and leaves the attempt half finished. Telegram then
+answers the next login with `AUTH_RESTART` and refuses to send a code at all, because the
+dead attempt is still tied to the temporary key in the session file. When that happens the
+command moves the unauthorised session file aside and starts over by itself.
+
+Running it on a session that already works changes nothing: it says who is signed in and
+stops, rather than trading a working authorisation for a new one.
 
 One process holds one session. The file is a single store of connection keys, and a second
 process opening it does not get a second connection, it gets a locked file. That is one of
