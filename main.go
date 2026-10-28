@@ -56,6 +56,9 @@ func run(args []string) error {
 		address     = flags.String("address", "127.0.0.1:8815", "address to listen on with "+config.TransportHTTP)
 		sessionDir  = flags.String("session-dir", "", "directory holding the MTProto session of the user identity")
 		downloadDir = flags.String("download-dir", "", "directory for downloaded files; without it the download tools are not offered")
+		publicURL   = flags.String("public-url", "",
+			"absolute address a browser reaches this server at, e.g. https://example.com/telegram; "+
+				"turns on the login page at /login (with "+config.TransportHTTP+" only)")
 		showVersion = flags.Bool("version", false, "print the version and exit")
 	)
 
@@ -75,6 +78,7 @@ func run(args []string) error {
 		Address:     *address,
 		SessionDir:  *sessionDir,
 		DownloadDir: *downloadDir,
+		PublicURL:   *publicURL,
 	}, config.OSEnv)
 	if err != nil {
 		return err
@@ -106,11 +110,19 @@ func serve(cfg *config.Config) error {
 
 	finished := make(chan error, 1)
 
+	// The login page exists only with a public URL. Without one the server is what it
+	// always was: an unauthorised session stops it, and the login command fixes that.
+	var web *transport.Web
+	if cfg.PublicURL != "" {
+		web = &transport.Web{PublicURL: cfg.PublicURL}
+	}
+
 	if cfg.Uses(access.User) {
 		user, err := telegram.NewUser(telegram.UserOptions{
 			APIID:      cfg.APIID,
 			APIHash:    cfg.APIHash,
 			SessionDir: cfg.SessionDir,
+			WebLogin:   web != nil,
 		})
 		if err != nil {
 			return err
@@ -120,8 +132,12 @@ func serve(cfg *config.Config) error {
 
 		ready, cancel := context.WithTimeout(ctx, startupTimeout)
 		defer cancel()
-		if err := user.Wait(ready); err != nil {
+		if err := user.Wait(ready); err != nil && !(web != nil && errors.Is(err, telegram.ErrLoginPending)) {
 			return fmt.Errorf("connecting as the user identity: %w", err)
+		}
+
+		if web != nil {
+			web.Login = user.WebLogin()
 		}
 
 		opts.UserRead = user
@@ -151,7 +167,7 @@ func serve(cfg *config.Config) error {
 	go func() {
 		switch cfg.Transport {
 		case config.TransportHTTP:
-			served <- transport.ServeHTTP(mcpServer, cfg.Address, cfg.AuthToken)
+			served <- transport.ServeHTTP(mcpServer, cfg.Address, cfg.AuthToken, web)
 		default:
 			served <- transport.ServeStdio(mcpServer)
 		}

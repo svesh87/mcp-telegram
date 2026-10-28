@@ -30,6 +30,24 @@ func TestIdentitiesAreRequired(t *testing.T) {
 	}
 }
 
+func TestPublicURLNeedsHTTP(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+
+	err := run([]string{"--identities=bot", "--public-url=https://mcp.example.com/telegram"})
+	if err == nil || !strings.Contains(err.Error(), "--public-url") {
+		t.Errorf("--public-url with stdio: %v", err)
+	}
+}
+
+// The login command is what existing deployments sign in with. It keeps its one flag: the
+// web login is the server's, not the command's.
+func TestLoginCommandIsUnchanged(t *testing.T) {
+	err := run([]string{"login", "--session-dir", t.TempDir(), "--public-url=https://mcp.example.com"})
+	if err == nil || !strings.Contains(err.Error(), "public-url") {
+		t.Errorf("the login command took --public-url: %v", err)
+	}
+}
+
 func TestLoginNeedsCredentials(t *testing.T) {
 	// The login command shares the configuration with the server, so it refuses for the
 	// same reasons: without the application credentials there is nothing to sign in with.

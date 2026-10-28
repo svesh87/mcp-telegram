@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -47,6 +48,9 @@ type Config struct {
 	AuthToken   string
 	SessionDir  string
 	DownloadDir string
+	// PublicURL is the absolute address the server is reached at from a browser, without a
+	// trailing slash. Empty means no login page.
+	PublicURL string
 }
 
 // Flags are the command line values Load needs. Kept separate from parsing so tests
@@ -58,6 +62,7 @@ type Flags struct {
 	Address     string
 	SessionDir  string
 	DownloadDir string
+	PublicURL   string
 }
 
 // Env reads a variable. Tests substitute a map instead of touching the process
@@ -99,7 +104,37 @@ func Load(flags Flags, env Env) (*Config, error) {
 		return nil, err
 	}
 
+	if cfg.PublicURL, err = parsePublicURL(flags.PublicURL, cfg.Transport); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// parsePublicURL checks the address the login page builds its links from. Behind a proxy
+// that strips a path prefix the server cannot work it out for itself, so it is told, and a
+// value that would send a browser somewhere odd is refused at startup.
+func parsePublicURL(raw, transport string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+
+	if transport != TransportHTTP {
+		return "", fmt.Errorf("--public-url needs --transport=%s: the login page is served over HTTP", TransportHTTP)
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("--public-url: %w", err)
+	}
+	if (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+		return "", fmt.Errorf("--public-url must be an absolute http(s) address, got %q", raw)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return "", fmt.Errorf("--public-url must be a plain base address without credentials, query or fragment, got %q", raw)
+	}
+
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 // parseIdentities accepts "user", "bot" or both, in any order. Running both is the

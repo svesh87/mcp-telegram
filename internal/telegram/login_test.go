@@ -33,9 +33,19 @@ type fakeAuth struct {
 	// password that finally works.
 	password string
 	signUp   bool
+	// user is who the authorization names, when a test cares.
+	user *tg.User
 
 	codes     []string
 	passwords []string
+	phones    []string
+}
+
+func (f *fakeAuth) authorization() *tg.AuthAuthorization {
+	if f.user == nil {
+		return &tg.AuthAuthorization{}
+	}
+	return &tg.AuthAuthorization{User: f.user}
 }
 
 func (f *fakeAuth) SendCode(context.Context, string, auth.SendCodeOptions) (tg.AuthSentCodeClass, error) {
@@ -48,8 +58,9 @@ func (f *fakeAuth) SendCode(context.Context, string, auth.SendCodeOptions) (tg.A
 	return &tg.AuthSentCode{Type: &tg.AuthSentCodeTypeApp{}, PhoneCodeHash: "hash"}, nil
 }
 
-func (f *fakeAuth) SignIn(_ context.Context, _, code, _ string) (*tg.AuthAuthorization, error) {
+func (f *fakeAuth) SignIn(_ context.Context, phone, code, _ string) (*tg.AuthAuthorization, error) {
 	f.codes = append(f.codes, code)
+	f.phones = append(f.phones, phone)
 
 	if f.signUp {
 		return nil, &auth.SignUpRequired{}
@@ -63,7 +74,7 @@ func (f *fakeAuth) SignIn(_ context.Context, _, code, _ string) (*tg.AuthAuthori
 	if f.needsPassword {
 		return nil, auth.ErrPasswordAuthNeeded
 	}
-	return &tg.AuthAuthorization{}, nil
+	return f.authorization(), nil
 }
 
 func (f *fakeAuth) Password(_ context.Context, password string) (*tg.AuthAuthorization, error) {
@@ -72,7 +83,7 @@ func (f *fakeAuth) Password(_ context.Context, password string) (*tg.AuthAuthori
 	if password != f.password {
 		return nil, auth.ErrPasswordInvalid
 	}
-	return &tg.AuthAuthorization{}, nil
+	return f.authorization(), nil
 }
 
 func TestSignInStraightThrough(t *testing.T) {

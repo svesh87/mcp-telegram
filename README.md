@@ -114,6 +114,7 @@ Flags:
 | `--address` | `127.0.0.1:8815` | where to listen with the HTTP transport |
 | `--session-dir` | none | where the MTProto session lives |
 | `--download-dir` | none | where downloaded files go |
+| `--public-url` | none | the absolute address a browser reaches the server at; turns on the login page, see below |
 | `--version` | | print the version |
 
 The server refuses to start rather than start half-configured: HTTP without
@@ -148,6 +149,44 @@ One process holds one session. The file is a single store of connection keys, an
 process opening it does not get a second connection, it gets a locked file. That is one of
 the reasons this server is meant to run once and serve every client.
 
+### Signing in from a browser
+
+With `--public-url` the server can also be signed in from a web page, which suits a server
+behind a gateway where nobody has a terminal in the container. It is off unless asked for:
+without the flag there is no page, an unauthorised session stops the server as it always
+did, and the login command above is the way in.
+
+`--public-url` is the absolute address the server is reached at from a browser, with any
+path prefix the proxy in front strips, for example `https://mcp.example.com/telegram`. It
+needs `--transport=streamable-http`. With it:
+
+- `/login` serves the page, behind the same bearer as `/mcp`. The page never holds the
+  token: it is checked in the `Authorization` header, which is meant to be added by the
+  gateway in front, and it is never put into a link, a form or the page itself.
+- `/` redirects to `<public-url>/login`. Every link, form and redirect is built from
+  `--public-url`, because behind a proxy that strips a prefix the request alone does not
+  say where the page is.
+- `/mcp` and `/healthz` are unchanged.
+- The page is sent with `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and a
+  strict content security policy, and a form posted from another site is refused.
+
+The page says whether the account is signed in, by name and username, never by phone
+number. If it is not, it walks the same sign-in as the command: phone number, then the code,
+then the two-factor password when Telegram asks for one, with three attempts at the code and
+three at the password. The phone number and the code hash are kept in memory for one
+attempt only, tied to a random identifier that expires after ten minutes; the password is
+passed to Telegram and dropped. None of it is logged.
+
+The sign-in runs on the connection the server already holds, so no second client ever
+opens the session file, and the session file is the same one the command writes. Once
+signed in, the account's tools work without a restart, as soon as the dialog list has
+loaded. Until then they answer that the session is waiting for its owner, while the bot
+works as usual.
+
+If Telegram answers `AUTH_RESTART`, the page cannot set the stale attempt aside, because it
+is tied to the key of the running connection: stop the server and run the login command
+once.
+
 ## Running it
 
 Read-only over stdio:
@@ -169,6 +208,15 @@ mcp-telegram --identities=user,bot \
 The HTTP transport serves `/mcp` behind a bearer token and `/healthz` without one. The
 port reaches Telegram with this server's rights, and on loopback any local process can
 knock, so the token is not optional and the comparison is constant-time.
+
+Behind a gateway that strips a path prefix and adds the bearer, with the login page on:
+
+```sh
+mcp-telegram --identities=user,bot \
+  --transport=streamable-http --address=0.0.0.0:8815 \
+  --session-dir=/session \
+  --public-url=https://mcp.example.com/telegram
+```
 
 The image is published to `ghcr.io/svesh87/mcp-telegram`, built for amd64 and arm64 from
 one static binary in a `scratch` image: no shell inside, nothing to reach the session

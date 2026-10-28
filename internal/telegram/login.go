@@ -149,22 +149,42 @@ func signIn(ctx context.Context, client authClient, prompt *terminalAuth, out io
 		case errors.Is(err, auth.ErrPasswordAuthNeeded):
 			return password(ctx, client, prompt, out)
 
-		case tgerr.Is(err, "PHONE_CODE_INVALID") && attempt < codeAttempts:
+		case codeRefused(err) && attempt < codeAttempts:
 			fmt.Fprintln(out, "that code was refused, try again.")
 			continue
 
-		case tgerr.Is(err, "PHONE_CODE_EXPIRED"):
+		case codeExpired(err):
 			return errors.New("the code has expired: run the login again and Telegram will send a new one")
 
 		default:
-			var signUp *auth.SignUpRequired
-			if errors.As(err, &signUp) {
-				return errors.New("this phone number has no Telegram account, " +
-					"and this command does not create one")
-			}
-			return fmt.Errorf("sign in: %w", err)
+			return signInFailure(err)
 		}
 	}
+}
+
+// The verdicts below are shared by this command and the login page, so both read Telegram's
+// answers the same way.
+
+// codeRefused says the code was mistyped, which costs one attempt rather than the login.
+func codeRefused(err error) bool { return tgerr.Is(err, "PHONE_CODE_INVALID") }
+
+// codeExpired says the code is no good any more and a new one is needed.
+func codeExpired(err error) bool { return tgerr.Is(err, "PHONE_CODE_EXPIRED") }
+
+// passwordRefused says the two-factor password was mistyped.
+func passwordRefused(err error) bool {
+	return errors.Is(err, auth.ErrPasswordInvalid) || tgerr.Is(err, "PASSWORD_HASH_INVALID")
+}
+
+// signInFailure words a sign-in failure that asking again will not fix. Creating an account
+// on someone's phone number is not something either way in should be able to do.
+func signInFailure(err error) error {
+	var signUp *auth.SignUpRequired
+	if errors.As(err, &signUp) {
+		return errors.New("this phone number has no Telegram account, " +
+			"and this command does not create one")
+	}
+	return fmt.Errorf("sign in: %w", err)
 }
 
 // password asks for the two-factor password until it fits or the attempts run out.
@@ -181,7 +201,7 @@ func password(ctx context.Context, client authClient, prompt *terminalAuth, out 
 		case err == nil:
 			return nil
 
-		case errors.Is(err, auth.ErrPasswordInvalid) || tgerr.Is(err, "PASSWORD_HASH_INVALID"):
+		case passwordRefused(err):
 			if attempt >= passwordAttempts {
 				return errors.New("the two-factor password was refused and the attempts are used up: " +
 					"run the login again")

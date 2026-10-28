@@ -24,11 +24,12 @@ func ServeStdio(mcpServer *server.MCPServer) error {
 	return server.ServeStdio(mcpServer)
 }
 
-// ServeHTTP starts the streamable HTTP transport on address, behind bearer auth.
-func ServeHTTP(mcpServer *server.MCPServer, address, token string) error {
+// ServeHTTP starts the streamable HTTP transport on address, behind bearer auth. A nil web
+// serves exactly what the server always served: /mcp and /healthz.
+func ServeHTTP(mcpServer *server.MCPServer, address, token string, web *Web) error {
 	httpServer := &http.Server{
 		Addr:    address,
-		Handler: NewHandler(mcpServer, token),
+		Handler: NewWebHandler(mcpServer, token, web),
 		// Only the header deadline is set. Read and write deadlines would cut off the
 		// long-lived SSE streams this transport is built on.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -39,6 +40,12 @@ func ServeHTTP(mcpServer *server.MCPServer, address, token string) error {
 
 // NewHandler wires the MCP endpoint behind bearer auth and adds the health endpoint.
 func NewHandler(mcpServer *server.MCPServer, token string) http.Handler {
+	return NewWebHandler(mcpServer, token, nil)
+}
+
+// NewWebHandler is NewHandler plus, when web is set, the login page and a redirect to it
+// from the bare root. Both sit behind the same bearer as /mcp.
+func NewWebHandler(mcpServer *server.MCPServer, token string, web *Web) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc(HealthPath, func(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +54,15 @@ func NewHandler(mcpServer *server.MCPServer, token string) http.Handler {
 	})
 
 	mux.Handle(MCPPath, RequireBearer(server.NewStreamableHTTPServer(mcpServer), token))
+
+	if web != nil {
+		mux.Handle(LoginPath, RequireBearer(loginPage(web), token))
+		// The exact root only: anything else unknown stays a 404.
+		mux.Handle("/{$}", RequireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			noStore(w)
+			http.Redirect(w, r, web.PublicURL+LoginPath, http.StatusFound)
+		}), token))
+	}
 
 	return mux
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/query"
 	"github.com/gotd/td/telegram/query/dialogs"
 	"github.com/gotd/td/tg"
@@ -35,11 +36,21 @@ const (
 var ErrNotAuthorized = errors.New(
 	"this session is not authorized: run \"mcp-telegram login\" once with the same --session-dir")
 
+// ErrLoginPending says the server is up and waiting for someone to sign in on its login
+// page. Only the server started with a public URL waits like that; without one, an
+// unauthorised session is ErrNotAuthorized and the server does not start at all.
+var ErrLoginPending = errors.New(
+	"this session is not signed in yet: the account owner has to sign in on the server's login page")
+
 // UserOptions configures the user identity.
 type UserOptions struct {
 	APIID      int
 	APIHash    string
 	SessionDir string
+
+	// WebLogin keeps the connection open on an unauthorised session and waits for a sign-in
+	// through WebLogin, instead of stopping with ErrNotAuthorized.
+	WebLogin bool
 }
 
 // UserClient reaches Telegram as the account behind the session file.
@@ -54,6 +65,17 @@ type UserClient struct {
 
 	ready chan struct{}
 	done  chan struct{}
+
+	// loginNeeded is closed once the connection is up and the session turns out to be
+	// unauthorised, and signedIn once the login page has signed it in. Both stay nil without
+	// the web login, and a nil channel is never selected, so that mode behaves as it always
+	// did.
+	loginNeeded chan struct{}
+	signedIn    chan struct{}
+	signOnce    sync.Once
+
+	// self is the signed in account, for the login page to name.
+	self *tg.User
 
 	// selfID is the account's own identifier. Whether a message is outgoing is decided by
 	// who wrote it rather than by the per-message flag: Telegram does not always set that
@@ -96,6 +118,11 @@ func NewUser(opts UserOptions) (*UserClient, error) {
 	}
 	user.refresh = user.loadDialogs
 
+	if opts.WebLogin {
+		user.loginNeeded = make(chan struct{})
+		user.signedIn = make(chan struct{})
+	}
+
 	return user, nil
 }
 
@@ -110,46 +137,102 @@ func (u *UserClient) Run(ctx context.Context) (err error) {
 	}()
 
 	return u.client.Run(ctx, func(ctx context.Context) error {
-		status, err := u.client.Auth().Status(ctx)
-		if err != nil {
-			return fmt.Errorf("checking authorization: %w", err)
-		}
-		if !status.Authorized {
-			return ErrNotAuthorized
-		}
-		if status.User != nil {
-			u.selfID = status.User.ID
-		}
-
-		// Chats are addressed by identifier, and MTProto needs an access hash with it.
-		// The hashes arrive with the dialog list, so the list is fetched once at startup
-		// and again whenever an identifier is not known.
-		if err := u.refresh(ctx); err != nil {
-			return fmt.Errorf("reading the dialog list: %w", err)
-		}
-
-		close(u.ready)
-
-		<-ctx.Done()
-		return ctx.Err()
+		return u.start(ctx, u.client.Auth().Status)
 	})
 }
 
+// start is what Run does once connected. The status check is passed in so the decisions
+// can be tested without a connection.
+func (u *UserClient) start(ctx context.Context, status func(context.Context) (*auth.Status, error)) error {
+	current, err := status(ctx)
+	if err != nil {
+		return fmt.Errorf("checking authorization: %w", err)
+	}
+
+	if current.Authorized {
+		u.setSelf(current.User)
+	} else {
+		if u.loginNeeded == nil {
+			return ErrNotAuthorized
+		}
+
+		// The connection stays up so the login page can use it: a second client on the
+		// same session file is exactly what this design rules out.
+		close(u.loginNeeded)
+
+		select {
+		case <-u.signedIn:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	// Chats are addressed by identifier, and MTProto needs an access hash with it.
+	// The hashes arrive with the dialog list, so the list is fetched once at startup
+	// and again whenever an identifier is not known.
+	if err := u.refresh(ctx); err != nil {
+		return fmt.Errorf("reading the dialog list: %w", err)
+	}
+
+	close(u.ready)
+
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// setSelf remembers who the session belongs to.
+func (u *UserClient) setSelf(user *tg.User) {
+	if user == nil {
+		return
+	}
+
+	u.mu.Lock()
+	u.self = user
+	u.selfID = user.ID
+	u.mu.Unlock()
+}
+
 // Wait blocks until the client is usable, or until it is clear that it will not be.
+//
+// With the web login, a session waiting for its owner is answered at once with
+// ErrLoginPending rather than held: a tool call cannot wait for a person.
 func (u *UserClient) Wait(ctx context.Context) error {
 	select {
 	case <-u.ready:
 		return nil
 	case <-u.done:
-		u.mu.Lock()
-		defer u.mu.Unlock()
-		if u.err != nil {
-			return u.err
+		return u.stopped()
+	case <-u.loginNeeded:
+		select {
+		case <-u.signedIn:
+			// Signed in a moment ago; the dialog list is on its way.
+			return u.waitReady(ctx)
+		default:
+			return ErrLoginPending
 		}
-		return errors.New("the Telegram user client stopped")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (u *UserClient) waitReady(ctx context.Context) error {
+	select {
+	case <-u.ready:
+		return nil
+	case <-u.done:
+		return u.stopped()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (u *UserClient) stopped() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.err != nil {
+		return u.err
+	}
+	return errors.New("the Telegram user client stopped")
 }
 
 func (u *UserClient) loadDialogs(ctx context.Context) error {

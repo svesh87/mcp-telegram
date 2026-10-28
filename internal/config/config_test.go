@@ -222,6 +222,72 @@ func TestBadChatListIsReportedWithItsVariable(t *testing.T) {
 	}
 }
 
+// Without --public-url nothing changes: no login page, and nothing new is required.
+func TestPublicURLIsOptional(t *testing.T) {
+	cfg, err := Load(baseFlags(), envMap(baseEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PublicURL != "" {
+		t.Errorf("PublicURL = %q without the flag", cfg.PublicURL)
+	}
+}
+
+func httpFlags(publicURL string) Flags {
+	flags := baseFlags()
+	flags.Transport = TransportHTTP
+	flags.PublicURL = publicURL
+	return flags
+}
+
+func httpEnv() map[string]string {
+	env := baseEnv()
+	env[EnvAuthToken] = "token"
+	return env
+}
+
+func TestPublicURLIsNormalised(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://mcp.example.com/telegram":  "https://mcp.example.com/telegram",
+		"https://mcp.example.com/telegram/": "https://mcp.example.com/telegram",
+		"https://mcp.example.com/":          "https://mcp.example.com",
+		"http://127.0.0.1:8815":             "http://127.0.0.1:8815",
+	} {
+		cfg, err := Load(httpFlags(raw), envMap(httpEnv()))
+		if err != nil {
+			t.Errorf("%q rejected: %v", raw, err)
+			continue
+		}
+		if cfg.PublicURL != want {
+			t.Errorf("%q became %q, want %q", raw, cfg.PublicURL, want)
+		}
+	}
+}
+
+func TestPublicURLRefusals(t *testing.T) {
+	for _, raw := range []string{
+		"/telegram",
+		"mcp.example.com/telegram",
+		"ftp://mcp.example.com",
+		"https://",
+		"https://user:pass@mcp.example.com",
+		"https://mcp.example.com/telegram?x=1",
+		"https://mcp.example.com/telegram#top",
+		"https://mcp.example.com/%zz",
+	} {
+		if _, err := Load(httpFlags(raw), envMap(httpEnv())); err == nil {
+			t.Errorf("%q was accepted", raw)
+		}
+	}
+
+	// The page is served over HTTP, so with stdio there is nowhere to put it.
+	flags := baseFlags()
+	flags.PublicURL = "https://mcp.example.com/telegram"
+	if _, err := Load(flags, envMap(baseEnv())); err == nil || !strings.Contains(err.Error(), TransportHTTP) {
+		t.Errorf("--public-url with stdio: %v", err)
+	}
+}
+
 func TestAPIIDMustBeNumeric(t *testing.T) {
 	env := baseEnv()
 	env[EnvAPIID] = "not-a-number"
