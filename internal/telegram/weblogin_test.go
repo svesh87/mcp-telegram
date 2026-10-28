@@ -326,6 +326,93 @@ func TestWebLoginWithoutACodeAtAll(t *testing.T) {
 	}
 }
 
+// Telegram says "sent to the app" and nothing arrives: the page offers the other way it
+// named, and the code then signs in against the new hash.
+func TestWebLoginResendsTheCodeAnotherWay(t *testing.T) {
+	client := &fakeAuth{
+		code: "12345",
+		sent: &tg.AuthSentCode{Type: &tg.AuthSentCodeTypeApp{}, PhoneCodeHash: "hash", NextType: &tg.AuthCodeTypeSMS{}},
+		resent: &tg.AuthSentCode{Type: &tg.AuthSentCodeTypeSMS{}, PhoneCodeHash: "hash-sms",
+			NextType: &tg.AuthCodeTypeCall{}},
+	}
+	login, signed, _ := webLogin(client)
+
+	step := start(t, login)
+	if step.NextKind != "by SMS" {
+		t.Fatalf("the page is not told it can ask for an SMS: %+v", step)
+	}
+
+	again, err := login.Resend(context.Background(), step.Flow)
+	if err != nil {
+		t.Fatalf("Resend: %v", err)
+	}
+	if again.Stage != StageCode || again.Flow != step.Flow || again.CodeKind != "by SMS" || again.NextKind != "by phone call" {
+		t.Errorf("after the resend: %+v", again)
+	}
+	if client.resends != 1 || client.resentHashes[0] != "hash" {
+		t.Errorf("resend went out %d times with %v", client.resends, client.resentHashes)
+	}
+
+	if _, err := login.Code(context.Background(), again.Flow, "12345"); err != nil {
+		t.Fatalf("Code after the resend: %v", err)
+	}
+	if len(*signed) != 1 {
+		t.Error("the resent code did not sign in")
+	}
+}
+
+func TestWebLoginResendRefusals(t *testing.T) {
+	sent := &tg.AuthSentCode{Type: &tg.AuthSentCodeTypeApp{}, PhoneCodeHash: "hash", NextType: &tg.AuthCodeTypeSMS{}}
+
+	// Nothing else offered: no call to Telegram, a notice, the attempt stays.
+	plain := &fakeAuth{}
+	login, _, _ := webLogin(plain)
+	step := start(t, login)
+	if step.NextKind != "" {
+		t.Fatalf("NextKind %q without a next type", step.NextKind)
+	}
+	again, err := login.Resend(context.Background(), step.Flow)
+	if err != nil || again.Notice == "" || again.Flow != step.Flow || plain.resends != 0 {
+		t.Errorf("resend without a next type: %+v, %v, %d calls", again, err, plain.resends)
+	}
+
+	// Telegram has nothing left: a notice, the button goes away, the code still works.
+	unavailable := &fakeAuth{sent: sent, resendErr: tgerr.New(400, "SEND_CODE_UNAVAILABLE")}
+	login, _, _ = webLogin(unavailable)
+	step = start(t, login)
+	again, err = login.Resend(context.Background(), step.Flow)
+	if err != nil || again.Notice == "" || again.NextKind != "" || again.Flow != step.Flow {
+		t.Errorf("SEND_CODE_UNAVAILABLE: %+v, %v", again, err)
+	}
+
+	// Too soon: a notice with the wait, the attempt stays.
+	flood := &fakeAuth{sent: sent, resendErr: tgerr.New(420, "FLOOD_WAIT_30")}
+	login, _, _ = webLogin(flood)
+	step = start(t, login)
+	again, err = login.Resend(context.Background(), step.Flow)
+	if err != nil || !strings.Contains(again.Notice, "30") || again.Flow != step.Flow {
+		t.Errorf("FLOOD_WAIT: %+v, %v", again, err)
+	}
+
+	// Expired: the attempt is over.
+	expired := &fakeAuth{sent: sent, resendErr: tgerr.New(400, "PHONE_CODE_EXPIRED")}
+	login, _, _ = webLogin(expired)
+	step = start(t, login)
+	if _, err := login.Resend(context.Background(), step.Flow); err == nil {
+		t.Error("an expired code was not reported")
+	}
+	if _, err := login.Code(context.Background(), step.Flow, "1"); err == nil {
+		t.Error("the attempt outlived an expired code")
+	}
+
+	// A stale form gets nowhere.
+	login, _, _ = webLogin(&fakeAuth{sent: sent})
+	start(t, login)
+	if _, err := login.Resend(context.Background(), "not-the-flow"); err == nil {
+		t.Error("a resend from another attempt was accepted")
+	}
+}
+
 func TestWebLoginAccount(t *testing.T) {
 	login, _, _ := webLogin(&fakeAuth{})
 	if !login.Account().CanSignIn {

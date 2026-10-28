@@ -40,6 +40,12 @@ func (f *fakeLogin) Code(_ context.Context, flow, code string) (telegram.LoginSt
 	return f.step, f.err
 }
 
+func (f *fakeLogin) Resend(_ context.Context, flow string) (telegram.LoginStep, error) {
+	f.calls = append(f.calls, "resend")
+	f.got = append(f.got, flow)
+	return f.step, f.err
+}
+
 func (f *fakeLogin) Password(_ context.Context, flow, password string) (telegram.LoginStep, error) {
 	f.calls = append(f.calls, "password")
 	f.got = append(f.got, flow, password)
@@ -237,6 +243,29 @@ func TestLoginPageWalksTheSteps(t *testing.T) {
 	wantGot := []string{"+37400000000", "flow-1", "12345", "flow-1", "secret"}
 	if strings.Join(login.got, ",") != strings.Join(wantGot, ",") {
 		t.Errorf("the forms passed %v", login.got)
+	}
+}
+
+func TestLoginPageOffersToResendTheCode(t *testing.T) {
+	login := &fakeLogin{
+		account: telegram.Account{CanSignIn: true},
+		step: telegram.LoginStep{Stage: telegram.StageCode, Flow: "flow-1", CodeKind: "in the Telegram app",
+			NextKind: "by SMS"},
+	}
+	handler := webHandler(t, login)
+
+	body := serveTo(handler, post(url.Values{"step": {"phone"}, "phone": {"+37400000000"}})).Body.String()
+	if !strings.Contains(body, `value="resend"`) || !strings.Contains(body, "by SMS") {
+		t.Fatalf("no resend button when Telegram offers another way: %s", body)
+	}
+
+	login.step = telegram.LoginStep{Stage: telegram.StageCode, Flow: "flow-1", CodeKind: "by SMS"}
+	body = serveTo(handler, post(url.Values{"step": {"resend"}, "flow": {"flow-1"}})).Body.String()
+	if !strings.Contains(body, "Telegram прислал код by SMS") || strings.Contains(body, `value="resend"`) {
+		t.Errorf("after the resend the page should show the new channel and no button: %s", body)
+	}
+	if strings.Join(login.calls, ",") != "start,resend" || login.got[len(login.got)-1] != "flow-1" {
+		t.Errorf("calls %v, got %v", login.calls, login.got)
 	}
 }
 

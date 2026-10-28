@@ -106,6 +106,7 @@ func login(ctx context.Context, opts UserOptions, in io.Reader, out io.Writer) e
 // ready-made flow.
 type authClient interface {
 	SendCode(ctx context.Context, phone string, options auth.SendCodeOptions) (tg.AuthSentCodeClass, error)
+	ResendCode(ctx context.Context, phone, codeHash string) (tg.AuthSentCodeClass, error)
 	SignIn(ctx context.Context, phone, code, codeHash string) (*tg.AuthAuthorization, error)
 	Password(ctx context.Context, password string) (*tg.AuthAuthorization, error)
 }
@@ -301,5 +302,22 @@ func codeKind(kind tg.AuthSentCodeTypeClass) string {
 		return "through Fragment"
 	default:
 		return "somewhere Telegram chose"
+	}
+}
+
+// nextCodeKind says where a resent code would go, in the same words as codeKind, or ""
+// when Telegram offers no other way.
+func nextCodeKind(kind tg.AuthCodeTypeClass) string {
+	switch kind.(type) {
+	case *tg.AuthCodeTypeSMS:
+		return "by SMS"
+	case *tg.AuthCodeTypeCall:
+		return "by phone call"
+	case *tg.AuthCodeTypeFlashCall, *tg.AuthCodeTypeMissedCall:
+		return "as the last digits of a calling number"
+	case *tg.AuthCodeTypeFragmentSMS:
+		return "through Fragment"
+	default:
+		return ""
 	}
 }

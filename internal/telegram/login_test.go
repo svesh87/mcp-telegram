@@ -35,6 +35,12 @@ type fakeAuth struct {
 	signUp   bool
 	// user is who the authorization names, when a test cares.
 	user *tg.User
+	// resent is ResendCode's answer, resendErr its refusal; resends counts the calls and
+	// resentHashes the code hashes they carried.
+	resent       tg.AuthSentCodeClass
+	resendErr    error
+	resends      int
+	resentHashes []string
 
 	codes     []string
 	passwords []string
@@ -56,6 +62,18 @@ func (f *fakeAuth) SendCode(context.Context, string, auth.SendCodeOptions) (tg.A
 		return f.sent, nil
 	}
 	return &tg.AuthSentCode{Type: &tg.AuthSentCodeTypeApp{}, PhoneCodeHash: "hash"}, nil
+}
+
+func (f *fakeAuth) ResendCode(_ context.Context, _, codeHash string) (tg.AuthSentCodeClass, error) {
+	f.resends++
+	f.resentHashes = append(f.resentHashes, codeHash)
+	if f.resendErr != nil {
+		return nil, f.resendErr
+	}
+	if f.resent != nil {
+		return f.resent, nil
+	}
+	return &tg.AuthSentCode{Type: &tg.AuthSentCodeTypeSMS{}, PhoneCodeHash: "hash-sms"}, nil
 }
 
 func (f *fakeAuth) SignIn(_ context.Context, phone, code, _ string) (*tg.AuthAuthorization, error) {

@@ -49,6 +49,8 @@ type LoginStep struct {
 	Flow string
 	// CodeKind says where Telegram sent the code.
 	CodeKind string
+	// NextKind says where a resent code would go; empty when Telegram offers nothing else.
+	NextKind string
 	// Notice is a refusal that costs one attempt rather than the whole sign-in.
 	Notice string
 }
@@ -71,6 +73,7 @@ type webFlow struct {
 	phone    string
 	codeHash string
 	codeKind string
+	nextKind string
 	stage    LoginStage
 	expires  time.Time
 
@@ -201,6 +204,7 @@ func (w *WebLogin) Start(ctx context.Context, phone string) (LoginStep, error) {
 			phone:    phone,
 			codeHash: sent.PhoneCodeHash,
 			codeKind: codeKind(sent.Type),
+			nextKind: nextCodeKind(sent.NextType),
 			stage:    StageCode,
 			expires:  w.now().Add(loginFlowTTL),
 		}
@@ -269,6 +273,59 @@ func (w *WebLogin) Code(ctx context.Context, flowID, code string) (LoginStep, er
 	}
 }
 
+// Resend asks Telegram to send the code the other way it offered (SMS, a call). Telegram
+// answers "sent to the app" even when nothing arrives there, which is what this is for.
+func (w *WebLogin) Resend(ctx context.Context, flowID string) (LoginStep, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	flow, err := w.current(flowID, StageCode)
+	if err != nil {
+		return LoginStep{}, err
+	}
+
+	if flow.nextKind == "" {
+		return w.step("Telegram offers no other way to send the code"), nil
+	}
+
+	client, err := w.client()
+	if err != nil {
+		w.flow = nil
+		return LoginStep{}, err
+	}
+
+	sent, err := client.ResendCode(ctx, flow.phone, flow.codeHash)
+	if err != nil {
+		var rpc *tgerr.Error
+		switch {
+		case codeExpired(err):
+			w.flow = nil
+			return LoginStep{}, errors.New("the code has expired: start over and Telegram will send a new one")
+		case tgerr.Is(err, "SEND_CODE_UNAVAILABLE"):
+			flow.nextKind = ""
+			return w.step("Telegram has no other way left to send the code"), nil
+		case errors.As(err, &rpc) && rpc.IsType("FLOOD_WAIT"):
+			return w.step(fmt.Sprintf("Telegram asks to wait %d s before sending the code again", rpc.Argument)), nil
+		default:
+			w.flow = nil
+			return LoginStep{}, fmt.Errorf("resend code: %w", err)
+		}
+	}
+
+	resent, ok := sent.(*tg.AuthSentCode)
+	if !ok {
+		w.flow = nil
+		return LoginStep{}, fmt.Errorf("resend code: Telegram answered with %T", sent)
+	}
+
+	flow.codeHash = resent.PhoneCodeHash
+	flow.codeKind = codeKind(resent.Type)
+	flow.nextKind = nextCodeKind(resent.NextType)
+	flow.expires = w.now().Add(loginFlowTTL)
+
+	return w.step(""), nil
+}
+
 // Password checks the two-factor password. It is passed on and forgotten.
 func (w *WebLogin) Password(ctx context.Context, flowID, password string) (LoginStep, error) {
 	w.mu.Lock()
@@ -333,7 +390,8 @@ func (w *WebLogin) current(flowID string, stage LoginStage) (*webFlow, error) {
 
 // step describes the attempt in progress.
 func (w *WebLogin) step(notice string) LoginStep {
-	return LoginStep{Stage: w.flow.stage, Flow: w.flow.id, CodeKind: w.flow.codeKind, Notice: notice}
+	return LoginStep{Stage: w.flow.stage, Flow: w.flow.id, CodeKind: w.flow.codeKind, NextKind: w.flow.nextKind,
+		Notice: notice}
 }
 
 // finish closes the attempt and hands the account to the client.

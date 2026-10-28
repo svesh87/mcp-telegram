@@ -33,6 +33,7 @@ type LoginService interface {
 	Account() telegram.Account
 	Start(ctx context.Context, phone string) (telegram.LoginStep, error)
 	Code(ctx context.Context, flow, code string) (telegram.LoginStep, error)
+	Resend(ctx context.Context, flow string) (telegram.LoginStep, error)
 	Password(ctx context.Context, flow, password string) (telegram.LoginStep, error)
 }
 
@@ -85,7 +86,8 @@ func loginPage(web *Web) http.Handler {
 			if err != nil {
 				view.Error = err.Error()
 			} else {
-				view.Stage, view.Flow, view.CodeKind, view.Notice = step.Stage, step.Flow, step.CodeKind, step.Notice
+				view.Stage, view.Flow, view.CodeKind, view.NextKind, view.Notice =
+					step.Stage, step.Flow, step.CodeKind, step.NextKind, step.Notice
 			}
 
 		default:
@@ -106,6 +108,9 @@ func loginPage(web *Web) http.Handler {
 	})
 }
 
+// stepResend is the form that asks for the code another way; it is not a stage of its own.
+const stepResend = "resend"
+
 // submit hands one form to the sign-in. Which form it was is said by the form itself.
 func submit(r *http.Request, login LoginService) (telegram.LoginStep, error) {
 	flow := r.PostFormValue("flow")
@@ -113,6 +118,8 @@ func submit(r *http.Request, login LoginService) (telegram.LoginStep, error) {
 	switch r.PostFormValue("step") {
 	case string(telegram.StageCode):
 		return login.Code(r.Context(), flow, r.PostFormValue("code"))
+	case stepResend:
+		return login.Resend(r.Context(), flow)
 	case string(telegram.StagePassword):
 		return login.Password(r.Context(), flow, r.PostFormValue("password"))
 	default:
@@ -142,6 +149,7 @@ type loginView struct {
 	Stage    telegram.LoginStage
 	Flow     string
 	CodeKind string
+	NextKind string
 	Notice   string
 	Error    string
 }
@@ -230,6 +238,14 @@ button {
   </label>
   <button type="submit">Дальше</button>
 </form>
+{{ if .NextKind }}
+<form method="post" action="{{ .Action }}">
+  <input type="hidden" name="step" value="resend">
+  <input type="hidden" name="flow" value="{{ .Flow }}">
+  <p class="lead">Код не пришёл? Telegram может прислать его ещё раз: {{ .NextKind }}.</p>
+  <button type="submit">Прислать код иначе</button>
+</form>
+{{ end }}
 <p><a href="{{ .Action }}">Начать заново</a></p>
 
 {{ else if eq .Stage "password" }}
